@@ -126,13 +126,31 @@
             const parsedPosition = JSON.parse(raw);
             const left = Number(parsedPosition?.left);
             const top = Number(parsedPosition?.top);
-            if (!Number.isFinite(left) || !Number.isFinite(top)) {
+            const xPercent = Number(parsedPosition?.xPercent);
+            const yPercent = Number(parsedPosition?.yPercent);
+            const anchorX = parsedPosition?.anchorX === 'right' ? 'right' : 'left';
+            const anchorY = parsedPosition?.anchorY === 'bottom' ? 'bottom' : 'top';
+            const offsetX = Number(parsedPosition?.offsetX);
+            const offsetY = Number(parsedPosition?.offsetY);
+
+            const hasLegacyCoordinates = Number.isFinite(left) && Number.isFinite(top);
+            const hasPercentCoordinates = Number.isFinite(xPercent) && Number.isFinite(yPercent);
+            const hasAnchoredOffsets = Number.isFinite(offsetX) && Number.isFinite(offsetY);
+            if (!hasLegacyCoordinates && !hasPercentCoordinates && !hasAnchoredOffsets) {
                 return null;
             }
 
             return {
-                left: Math.round(left),
-                top: Math.round(top)
+                // `left/top` 和 `anchor/offset` 都是旧版本兼容字段：
+                // 旧存储会先按历史规则恢复，后续在拖拽结束时自动升级成百分比坐标。
+                left: hasLegacyCoordinates ? Math.round(left) : null,
+                top: hasLegacyCoordinates ? Math.round(top) : null,
+                xPercent: hasPercentCoordinates ? clamp(xPercent, 0, 1) : null,
+                yPercent: hasPercentCoordinates ? clamp(yPercent, 0, 1) : null,
+                anchorX,
+                anchorY,
+                offsetX: hasAnchoredOffsets ? Math.round(offsetX) : null,
+                offsetY: hasAnchoredOffsets ? Math.round(offsetY) : null
             };
         } catch (error) {
             console.warn(`[${SCRIPT_NAME}] 读取按钮位置失败，已回退到默认位置`, error);
@@ -146,8 +164,14 @@
         }
 
         const normalizedPosition = {
-            left: Math.round(position.left),
-            top: Math.round(position.top)
+            left: Number.isFinite(position.left) ? Math.round(position.left) : null,
+            top: Number.isFinite(position.top) ? Math.round(position.top) : null,
+            xPercent: Number.isFinite(position.xPercent) ? clamp(position.xPercent, 0, 1) : null,
+            yPercent: Number.isFinite(position.yPercent) ? clamp(position.yPercent, 0, 1) : null,
+            anchorX: position.anchorX === 'right' ? 'right' : 'left',
+            anchorY: position.anchorY === 'bottom' ? 'bottom' : 'top',
+            offsetX: Number.isFinite(position.offsetX) ? Math.round(position.offsetX) : null,
+            offsetY: Number.isFinite(position.offsetY) ? Math.round(position.offsetY) : null
         };
 
         state.launcherPosition = normalizedPosition;
@@ -589,6 +613,9 @@
             // 默认定位也立即转成 left/top 固定坐标，并走一次边界收敛，
             // 这样即使右侧存在浏览器滚动条，也不会把悬浮球挤进滚动条区域。
             pinFloatingElementPosition(launcher);
+            // 默认位置也立刻转成百分比坐标，避免用户尚未拖动时，
+            // 仅因窗口还原/最大化就把按钮留在旧的绝对像素位置。
+            persistLauncherPositionFromElement(launcher);
         }
         bindFloatingDrag(launcher, {
             dragHandle: launcher,
@@ -811,8 +838,25 @@
             return;
         }
 
+        const percentLeft = resolveLauncherPercentLeft(element, state.launcherPosition);
+        const percentTop = resolveLauncherPercentTop(element, state.launcherPosition);
+        const anchoredLeft = resolveLauncherAnchoredLeft(element, state.launcherPosition);
+        const anchoredTop = resolveLauncherAnchoredTop(element, state.launcherPosition);
+
         // 恢复历史位置时仍会再次经过视口边界收敛，避免分辨率变化后按钮跑到可视区域外。
-        setFloatingElementPosition(element, state.launcherPosition.left, state.launcherPosition.top);
+        if (Number.isFinite(percentLeft) && Number.isFinite(percentTop)) {
+            setFloatingElementPosition(element, percentLeft, percentTop);
+            return;
+        }
+
+        if (Number.isFinite(anchoredLeft) && Number.isFinite(anchoredTop)) {
+            setFloatingElementPosition(element, anchoredLeft, anchoredTop);
+            return;
+        }
+
+        if (Number.isFinite(state.launcherPosition.left) && Number.isFinite(state.launcherPosition.top)) {
+            setFloatingElementPosition(element, state.launcherPosition.left, state.launcherPosition.top);
+        }
     }
 
     function persistLauncherPositionFromElement(element) {
@@ -821,10 +865,79 @@
         }
 
         const rect = element.getBoundingClientRect();
+        const viewportWidth = getFloatingViewportWidth();
+        const viewportHeight = getFloatingViewportHeight();
+        const distanceToLeft = rect.left;
+        const distanceToRight = Math.max(0, viewportWidth - rect.right);
+        const distanceToTop = rect.top;
+        const distanceToBottom = Math.max(0, viewportHeight - rect.bottom);
+        const anchorX = distanceToRight <= distanceToLeft ? 'right' : 'left';
+        const anchorY = distanceToBottom <= distanceToTop ? 'bottom' : 'top';
+        const { minLeft, maxLeft, minTop, maxTop } = getFloatingPositionBounds(element);
+        const xTravel = Math.max(0, maxLeft - minLeft);
+        const yTravel = Math.max(0, maxTop - minTop);
+        const clampedLeft = clamp(rect.left, minLeft, maxLeft);
+        const clampedTop = clamp(rect.top, minTop, maxTop);
+
         saveLauncherPosition({
             left: rect.left,
-            top: rect.top
+            top: rect.top,
+            // 优先保存为“可移动区域中的百分比位置”：
+            // 例如横向 0 代表最左可停靠位，1 代表最右可停靠位。
+            // 这样窗口尺寸变化时，按钮会跟着视口比例一起移动。
+            xPercent: xTravel > 0 ? (clampedLeft - minLeft) / xTravel : 0,
+            yPercent: yTravel > 0 ? (clampedTop - minTop) / yTravel : 0,
+            // 水平和垂直方向分别锚定到“当前更近的边”，
+            // 作为对旧版本数据的兼容兜底继续保留。
+            anchorX,
+            anchorY,
+            offsetX: anchorX === 'right' ? distanceToRight : distanceToLeft,
+            offsetY: anchorY === 'bottom' ? distanceToBottom : distanceToTop
         });
+    }
+
+    function resolveLauncherPercentLeft(element, position) {
+        if (!element || !position || !Number.isFinite(position.xPercent)) {
+            return null;
+        }
+
+        const { minLeft, maxLeft } = getFloatingPositionBounds(element);
+        const xTravel = Math.max(0, maxLeft - minLeft);
+        return minLeft + xTravel * clamp(position.xPercent, 0, 1);
+    }
+
+    function resolveLauncherPercentTop(element, position) {
+        if (!element || !position || !Number.isFinite(position.yPercent)) {
+            return null;
+        }
+
+        const { minTop, maxTop } = getFloatingPositionBounds(element);
+        const yTravel = Math.max(0, maxTop - minTop);
+        return minTop + yTravel * clamp(position.yPercent, 0, 1);
+    }
+
+    function resolveLauncherAnchoredLeft(element, position) {
+        if (!element || !position || !Number.isFinite(position.offsetX)) {
+            return null;
+        }
+
+        if (position.anchorX === 'right') {
+            return getFloatingViewportWidth() - element.offsetWidth - position.offsetX;
+        }
+
+        return position.offsetX;
+    }
+
+    function resolveLauncherAnchoredTop(element, position) {
+        if (!element || !position || !Number.isFinite(position.offsetY)) {
+            return null;
+        }
+
+        if (position.anchorY === 'bottom') {
+            return getFloatingViewportHeight() - element.offsetHeight - position.offsetY;
+        }
+
+        return position.offsetY;
     }
 
     function syncPanelPositionToLauncher(forceReset = false) {
@@ -846,15 +959,27 @@
         setFloatingElementPosition(panel, preferredLeft, nextTop);
     }
 
+    function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+    }
+
     function clampFloatingPosition(left, top, element) {
+        const { minLeft, maxLeft, minTop, maxTop } = getFloatingPositionBounds(element);
+        return {
+            clampedLeft: Math.min(maxLeft, Math.max(minLeft, Math.round(left))),
+            clampedTop: Math.min(maxTop, Math.max(minTop, Math.round(top)))
+        };
+    }
+
+    function getFloatingPositionBounds(element) {
         const padding = Math.max(0, Number(CONFIG.floatingUiViewportPadding) || 0);
         const viewportWidth = getFloatingViewportWidth();
         const viewportHeight = getFloatingViewportHeight();
-        const maxLeft = Math.max(padding, viewportWidth - element.offsetWidth - padding);
-        const maxTop = Math.max(padding, viewportHeight - element.offsetHeight - padding);
         return {
-            clampedLeft: Math.min(maxLeft, Math.max(padding, Math.round(left))),
-            clampedTop: Math.min(maxTop, Math.max(padding, Math.round(top)))
+            minLeft: padding,
+            minTop: padding,
+            maxLeft: Math.max(padding, viewportWidth - element.offsetWidth - padding),
+            maxTop: Math.max(padding, viewportHeight - element.offsetHeight - padding)
         };
     }
 
@@ -2119,10 +2244,12 @@
         window.addEventListener('resize', () => {
             closeDateTimeDropdown();
             const launcher = document.getElementById('bdt-launcher');
-            clampFloatingElementToViewport(launcher);
-            if (launcher?.dataset.positionPinned === 'true') {
-                // 视口尺寸变化后如果按钮被挤回可视区，立即同步持久化坐标，避免下次刷新又跑回旧位置。
-                persistLauncherPositionFromElement(launcher);
+            if (launcher?.dataset.positionPinned === 'true' && state.launcherPosition) {
+                // 尺寸变化时优先按持久化的百分比位置重新投影到新视口，
+                // 不把“缩小窗口时临时被挤压后的坐标”反写进存储。
+                restoreLauncherPosition(launcher);
+            } else {
+                clampFloatingElementToViewport(launcher);
             }
             syncPanelPositionToLauncher(true);
         });
