@@ -667,6 +667,12 @@
             </div>
         `;
 
+        panel.addEventListener('wheel', (event) => {
+            // 鼠标位于悬浮面板上时，禁止把滚轮事件继续传给页面，
+            // 避免在面板内操作时把外层动态列表一起滚动走。
+            event.preventDefault();
+        }, { passive: false });
+
         document.body.appendChild(panel);
         bindSearchPanelEvents();
         bindFloatingDrag(panel, {
@@ -1903,6 +1909,20 @@
                     renderDateTimeDropdown(input, partName, false);
                 }
             });
+            input.addEventListener('wheel', (event) => {
+                // 只有“当前输入框已聚焦且鼠标正悬停其上方”时，才把滚轮解释为数值增减。
+                // 其余情况交给外层面板统一拦截，这样不会误改未激活的输入框。
+                if (document.activeElement !== input) {
+                    return;
+                }
+                const step = event.deltaY < 0 ? 1 : (event.deltaY > 0 ? -1 : 0);
+                if (!step) {
+                    return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                stepDateTimeGroupPart(prefix, partName, step);
+            }, { passive: false });
             input.addEventListener('blur', () => {
                 window.setTimeout(() => {
                     closeDateTimeDropdownIfDetached(input);
@@ -2178,6 +2198,75 @@
         setDateTimeGroupParts(prefix, normalizedParts);
     }
 
+    function getFallbackDateTimeGroupParts(prefix) {
+        return prefix === 'start' ? getStartOfTodayDateTimeParts() : getNowDateTimeParts();
+    }
+
+    function getSafeDateTimeGroupParts(prefix) {
+        const parts = readDateTimeGroupParts(prefix);
+        const fallbackParts = getFallbackDateTimeGroupParts(prefix);
+        const safeParts = {
+            year: normalizeNumberPart(parts?.year, 0, 9999),
+            month: normalizeNumberPart(parts?.month, 1, 12),
+            day: 1,
+            hour: normalizeNumberPart(parts?.hour, 0, 23),
+            minute: normalizeNumberPart(parts?.minute, 0, 59),
+            second: normalizeNumberPart(parts?.second, 0, 59)
+        };
+
+        if (!Number.isFinite(parts?.year)) {
+            safeParts.year = fallbackParts.year;
+        }
+        if (!Number.isFinite(parts?.month)) {
+            safeParts.month = fallbackParts.month;
+        }
+        if (!Number.isFinite(parts?.hour)) {
+            safeParts.hour = fallbackParts.hour;
+        }
+        if (!Number.isFinite(parts?.minute)) {
+            safeParts.minute = fallbackParts.minute;
+        }
+        if (!Number.isFinite(parts?.second)) {
+            safeParts.second = fallbackParts.second;
+        }
+
+        const rawDay = Number.isFinite(parts?.day) ? parts.day : fallbackParts.day;
+        safeParts.day = clampDayToMonth(safeParts.year, safeParts.month, rawDay);
+        return safeParts;
+    }
+
+    function stepDateTimeGroupPart(prefix, partName, step) {
+        const safeParts = getSafeDateTimeGroupParts(prefix);
+        if (!Object.prototype.hasOwnProperty.call(safeParts, partName)) {
+            return;
+        }
+
+        // 滚轮向上增大、向下减小，并对每个时间片段做边界保护。
+        if (partName === 'year') {
+            safeParts.year = normalizeNumberPart(safeParts.year + step, 0, 9999);
+        } else if (partName === 'month') {
+            safeParts.month = normalizeNumberPart(safeParts.month + step, 1, 12);
+        } else if (partName === 'day') {
+            safeParts.day = normalizeNumberPart(safeParts.day + step, 1, getDaysInMonth(safeParts.year, safeParts.month));
+        } else if (partName === 'hour') {
+            safeParts.hour = normalizeNumberPart(safeParts.hour + step, 0, 23);
+        } else if (partName === 'minute') {
+            safeParts.minute = normalizeNumberPart(safeParts.minute + step, 0, 59);
+        } else if (partName === 'second') {
+            safeParts.second = normalizeNumberPart(safeParts.second + step, 0, 59);
+        }
+
+        // 改动年月后，日期上限会变化，这里同步把“日”压回合法范围。
+        safeParts.day = clampDayToMonth(safeParts.year, safeParts.month, safeParts.day);
+        setDateTimeGroupParts(prefix, safeParts);
+        updateDurationDisplay();
+
+        const activeInput = document.getElementById(`bdt-${prefix}-${partName}`);
+        if (activeInput && shouldUseDateTimeDropdown(activeInput)) {
+            renderDateTimeDropdown(activeInput, partName, false);
+        }
+    }
+
     function normalizeNumberPart(value, min, max) {
         if (!Number.isFinite(value)) {
             return min;
@@ -2309,11 +2398,17 @@
 
         const rect = input.getBoundingClientRect();
         dropdown.style.left = `${Math.max(8, rect.left)}px`;
-        dropdown.style.top = `${rect.bottom + 6}px`;
         dropdown.style.width = `${Math.ceil(rect.width)}px`;
         dropdown.style.minWidth = `${Math.ceil(rect.width)}px`;
         dropdown.style.maxWidth = `${Math.ceil(rect.width)}px`;
         dropdown.hidden = false;
+
+        // 下拉栏固定改为向上展开：
+        // 先让元素参与布局，拿到实际高度，再把顶部定位到输入框上方。
+        // 同时保留一个最小顶部边距，避免菜单贴到视口最上边。
+        const dropdownHeight = dropdown.offsetHeight;
+        const desiredTop = rect.top - dropdownHeight - 6;
+        dropdown.style.top = `${Math.max(8, desiredTop)}px`;
 
         const activeOption = dropdown.querySelector('.bdt-time-dropdown-option.is-active');
         if (activeOption) {
@@ -2351,6 +2446,10 @@
         } else if (partName === 'second') {
             options = createSequentialNumberOptions(0, 59);
         }
+
+        // 面板里要求“大的在上、小的在下”，所以在渲染前统一反转顺序。
+        // 这样年份、月份、日期、时分秒都会保持一致的倒序展示。
+        options.reverse();
 
         if (!shouldFilterByInput) {
             return options;
