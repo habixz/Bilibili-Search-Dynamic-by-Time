@@ -511,6 +511,17 @@
                 line-height: 1.8;
                 box-sizing: border-box;
             }
+            .bdt-progress-current-row {
+                display: flex;
+                flex-direction: column;
+            }
+            .bdt-progress-current-value {
+                display: block;
+                min-height: 1.8em;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
             .bdt-recycle-summary {
                 flex: 1 1 0;
                 min-width: 180px;
@@ -679,7 +690,10 @@
                 <div class="bdt-progress" id="bdt-progress">
                     <div>已滚动：<span id="bdt-progress-pages">0</span> 次</div>
                     <div>本次命中：<span id="bdt-progress-count">0</span> 条</div>
-                    <div>当前翻至：<span id="bdt-progress-current">等待中...</span></div>
+                    <div class="bdt-progress-current-row">
+                        <span>当前翻至：</span>
+                        <span class="bdt-progress-current-value" id="bdt-progress-current">等待中...</span>
+                    </div>
                 </div>
             </div>
         `;
@@ -1141,8 +1155,19 @@
             count.textContent = String(resultCount);
         }
         if (current) {
-            current.textContent = currentDateText;
+            current.textContent = formatProgressCurrentDisplay(currentDateText);
         }
+    }
+
+    function formatProgressCurrentDisplay(currentDateText) {
+        const normalizedText = String(currentDateText || '').trim();
+        if (!normalizedText) {
+            return '等待中...';
+        }
+        // “当前翻至”固定为两层结构：
+        // 第一层是标题，第二层把日期和时间放在同一行里显示。
+        // 这样既不会临时把值拆成两行，也能避免统计开始后面板高度突然变化。
+        return normalizedText;
     }
 
     function formatDateInfoDisplay(dateInfo) {
