@@ -20,13 +20,13 @@
     const STORAGE_KEY = 'bili_dynamic_time_search_settings_v1';
     const LAUNCHER_POSITION_KEY = 'bili_dynamic_time_search_launcher_position_v1';
     const CONFIG = {
-        // 每轮滚动后等待页面继续加载的时长，单位毫秒；这里的值会直接参与实际等待，不再额外强制抬高下限。
+        // 每轮滚动后等待页面继续加载的时长，单位毫秒；这里的值会直接参与实际等待，不再额外强制抬高下限
         searchRequestDelay: 300,
-        recycleHighWaterMark: 180,
-        recycleLowWaterMark: 120,
-        recycleManualKeepCount: 100,
+        recycleHighWaterMark: 180, // 多于180条动态时, 启动自动回收
+        recycleLowWaterMark: 120, // 自动回收时, 最少保留120条动态
+        recycleManualKeepCount: 100, // 手动回收时, 最少保留100条动态
         recycleViewportTopBuffer: 1800,
-        recycleRangeContextCardBuffer: 6,
+        recycleRangeContextCardBuffer: 10, // 查找时, 保留查找范围上方多少条动态
         recycleSpacerCollapseDelay: 1400,
         stuckScrollStep: 1200,
         stuckScrollRecoverDistance: 1800,
@@ -63,9 +63,10 @@
         dropdownEventsBound: false,
         activeDateTimeDropdown: null,
         lastFallbackScrollAt: 0,
+        protectedRecycleRange: null,
         recycleCollapseTimerId: null,
         recycleContextContainer: null,
-        recycleContextPageKey: location.href,
+        recycleContextPageKey: getRecycleContextPageKey(),
         recycleStats: createEmptyRecycleStats()
     };
 
@@ -142,7 +143,7 @@
 
             return {
                 // `left/top` 和 `anchor/offset` 都是旧版本兼容字段：
-                // 旧存储会先按历史规则恢复，后续在拖拽结束时自动升级成百分比坐标。
+                // 旧存储会先按历史规则恢复，后续在拖拽结束时自动升级成百分比坐标
                 left: hasLegacyCoordinates ? Math.round(left) : null,
                 top: hasLegacyCoordinates ? Math.round(top) : null,
                 xPercent: hasPercentCoordinates ? clamp(xPercent, 0, 1) : null,
@@ -474,6 +475,13 @@
             .bdt-actions-recycle {
                 margin-top: 16px;
             }
+            .bdt-stats-row {
+                display: flex;
+                gap: 10px;
+                margin-top: 8px;
+                align-items: stretch;
+                flex-wrap: wrap;
+            }
             .bdt-btn {
                 border: none;
                 border-radius: 10px;
@@ -492,7 +500,20 @@
                 background: linear-gradient(135deg, #8b95a7 0%, #61666d 100%);
             }
             .bdt-progress {
-                margin-top: 12px;
+                flex: 1 1 0;
+                min-width: 180px;
+                padding: 12px;
+                border-radius: 12px;
+                background: #f6f7fb;
+                border: 1px solid #e7ebf2;
+                font-size: 13px;
+                color: #61666d;
+                line-height: 1.8;
+                box-sizing: border-box;
+            }
+            .bdt-recycle-summary {
+                flex: 1 1 0;
+                min-width: 180px;
                 padding: 12px;
                 border-radius: 12px;
                 background: #eef6ff;
@@ -500,15 +521,7 @@
                 font-size: 13px;
                 color: #4b5563;
                 line-height: 1.8;
-            }
-            .bdt-recycle-summary {
-                margin-top: 8px;
-                padding: 12px;
-                border-radius: 12px;
-                background: #f6f7fb;
-                font-size: 13px;
-                color: #61666d;
-                line-height: 1.8;
+                box-sizing: border-box;
             }
             .bdt-recycle-spacer {
                 width: 100%;
@@ -521,12 +534,14 @@
                 margin-bottom: 12px;
                 padding: 10px 12px;
                 border-radius: 12px;
-                border: 1px solid rgba(0, 174, 236, 0.18);
-                background: linear-gradient(135deg, rgba(0, 174, 236, 0.08) 0%, rgba(92, 124, 255, 0.08) 100%);
-                color: #0f4fcf;
+                border: 1px solid rgba(0, 95, 255, 0.36);
+                background: linear-gradient(135deg, rgba(0, 174, 236, 0.14) 0%, rgba(92, 124, 255, 0.18) 100%);
+                color: #005cff; // 字颜色
                 font-size: 13px;
+                font-weight: 700;
                 line-height: 1.6;
-                box-shadow: 0 6px 18px rgba(15, 79, 207, 0.08);
+                text-align: center;
+                box-shadow: 0 6px 18px rgba(15, 79, 207, 0.12);
             }
             .bdt-recycle-banner[hidden] {
                 display: none !important;
@@ -611,10 +626,10 @@
             restoreLauncherPosition(launcher);
         } else {
             // 默认定位也立即转成 left/top 固定坐标，并走一次边界收敛，
-            // 这样即使右侧存在浏览器滚动条，也不会把悬浮球挤进滚动条区域。
+            // 这样即使右侧存在浏览器滚动条，也不会把悬浮球挤进滚动条区域
             pinFloatingElementPosition(launcher);
             // 默认位置也立刻转成百分比坐标，避免用户尚未拖动时，
-            // 仅因窗口还原/最大化就把按钮留在旧的绝对像素位置。
+            // 仅因窗口还原/最大化就把按钮留在旧的绝对像素位置
             persistLauncherPositionFromElement(launcher);
         }
         bindFloatingDrag(launcher, {
@@ -656,20 +671,22 @@
             <div class="bdt-actions bdt-actions-recycle">
                 <button class="bdt-btn bdt-btn-secondary" id="bdt-recycle" type="button" style="flex:1;">回收顶部动态</button>
             </div>
-            <div class="bdt-recycle-summary" id="bdt-recycle-summary">
-                <div>已回收：<span id="bdt-recycle-count">0</span> 条</div>
-                <div>回收高度：<span id="bdt-recycle-height">0</span> px</div>
-            </div>
-            <div class="bdt-progress" id="bdt-progress" hidden>
-                <div>已滚动：<span id="bdt-progress-pages">0</span> 次</div>
-                <div>本次命中：<span id="bdt-progress-count">0</span> 条</div>
-                <div>当前翻至：<span id="bdt-progress-current">等待中...</span></div>
+            <div class="bdt-stats-row">
+                <div class="bdt-recycle-summary" id="bdt-recycle-summary">
+                    <div>已回收：<span id="bdt-recycle-count">0</span> 条</div>
+                    <div>回收高度：<span id="bdt-recycle-height">0</span> px</div>
+                </div>
+                <div class="bdt-progress" id="bdt-progress">
+                    <div>已滚动：<span id="bdt-progress-pages">0</span> 次</div>
+                    <div>本次命中：<span id="bdt-progress-count">0</span> 条</div>
+                    <div>当前翻至：<span id="bdt-progress-current">等待中...</span></div>
+                </div>
             </div>
         `;
 
         panel.addEventListener('wheel', (event) => {
             // 鼠标位于悬浮面板上时，禁止把滚轮事件继续传给页面，
-            // 避免在面板内操作时把外层动态列表一起滚动走。
+            // 避免在面板内操作时把外层动态列表一起滚动走
             event.preventDefault();
         }, { passive: false });
 
@@ -713,7 +730,7 @@
         panel.hidden = !panel.hidden;
         if (!panel.hidden) {
             syncUiFromState();
-            // 每次重新打开时都按当前按钮位置重新贴靠，避免按钮拖走后面板还停在旧位置。
+            // 每次重新打开时都按当前按钮位置重新贴靠，避免按钮拖走后面板还停在旧位置
             syncPanelPositionToLauncher(true);
         }
     }
@@ -721,7 +738,7 @@
     function handleLauncherClick(event) {
         const launcher = event.currentTarget;
         if (launcher?.dataset?.suppressClickAfterDrag === 'true') {
-            // 拖拽结束后的这一次 click 是浏览器补发的“抬手点击”，这里吞掉，避免拖完面板反而又触发开关。
+            // 拖拽结束后的这一次 click 是浏览器补发的“抬手点击”，这里吞掉，避免拖完面板反而又触发开关
             launcher.dataset.suppressClickAfterDrag = 'false';
             return;
         }
@@ -806,7 +823,7 @@
             document.addEventListener('mousemove', handleMouseMove, true);
             document.addEventListener('mouseup', finishDrag, true);
 
-            // 阻止浏览器把拖拽起手识别成文本选中或按钮聚焦，保证拖动过程更稳定。
+            // 阻止浏览器把拖拽起手识别成文本选中或按钮聚焦，保证拖动过程更稳定
             event.preventDefault();
         });
 
@@ -849,7 +866,7 @@
         const anchoredLeft = resolveLauncherAnchoredLeft(element, state.launcherPosition);
         const anchoredTop = resolveLauncherAnchoredTop(element, state.launcherPosition);
 
-        // 恢复历史位置时仍会再次经过视口边界收敛，避免分辨率变化后按钮跑到可视区域外。
+        // 恢复历史位置时仍会再次经过视口边界收敛，避免分辨率变化后按钮跑到可视区域外
         if (Number.isFinite(percentLeft) && Number.isFinite(percentTop)) {
             setFloatingElementPosition(element, percentLeft, percentTop);
             return;
@@ -889,12 +906,12 @@
             left: rect.left,
             top: rect.top,
             // 优先保存为“可移动区域中的百分比位置”：
-            // 例如横向 0 代表最左可停靠位，1 代表最右可停靠位。
-            // 这样窗口尺寸变化时，按钮会跟着视口比例一起移动。
+            // 例如横向 0 代表最左可停靠位，1 代表最右可停靠位
+            // 这样窗口尺寸变化时，按钮会跟着视口比例一起移动
             xPercent: xTravel > 0 ? (clampedLeft - minLeft) / xTravel : 0,
             yPercent: yTravel > 0 ? (clampedTop - minTop) / yTravel : 0,
             // 水平和垂直方向分别锚定到“当前更近的边”，
-            // 作为对旧版本数据的兼容兜底继续保留。
+            // 作为对旧版本数据的兼容兜底继续保留
             anchorX,
             anchorY,
             offsetX: anchorX === 'right' ? distanceToRight : distanceToLeft,
@@ -956,7 +973,7 @@
         const launcherRect = launcher.getBoundingClientRect();
         const gap = Math.max(0, Number(CONFIG.launcherPanelGap) || 0);
 
-        // 默认让面板贴着按钮上方出现；如果按钮已经靠近顶部，就改为显示在按钮下方。
+        // 默认让面板贴着按钮上方出现；如果按钮已经靠近顶部，就改为显示在按钮下方
         const preferredLeft = launcherRect.right - panel.offsetWidth;
         const preferredTop = launcherRect.top - panel.offsetHeight - gap;
         const fallbackTop = launcherRect.bottom + gap;
@@ -991,12 +1008,12 @@
 
     function getFloatingViewportWidth() {
         // `clientWidth` 会排除浏览器右侧纵向滚动条占用的空间，
-        // 用它来约束悬浮元素，能避免按钮被滚动条盖住一小截。
+        // 用它来约束悬浮元素，能避免按钮被滚动条盖住一小截
         return Math.max(0, document.documentElement?.clientWidth || window.innerWidth || 0);
     }
 
     function getFloatingViewportHeight() {
-        // 高度侧同理优先取可用视口高度，避免底部滚动条或视口变化时定位越界。
+        // 高度侧同理优先取可用视口高度，避免底部滚动条或视口变化时定位越界
         return Math.max(0, document.documentElement?.clientHeight || window.innerHeight || 0);
     }
 
@@ -1015,7 +1032,7 @@
 
     async function startUserDynamicSearch() {
         if (!isDynamicSearchPage()) {
-            showToast('当前页面不支持时间查找。', 'error');
+            showToast('当前页面不支持时间查找', 'error');
             return;
         }
 
@@ -1027,7 +1044,7 @@
             return;
         }
 
-        // 配置值和实际行为保持一致，只做最基础的非负整数兜底，方便后续按站点表现继续微调。
+        // 配置值和实际行为保持一致，只做最基础的非负整数兜底，方便后续按站点表现继续微调
         const requestDelay = Math.max(0, Math.round(Number(CONFIG.searchRequestDelay) || 0));
 
         stopUserDynamicSearch(false);
@@ -1055,19 +1072,19 @@
                 if (range.startMs) {
                     if (analysis.reachedStartBoundary) {
                         if (analysis.matches.length > 0) {
-                            highlightMatchedDynamics(analysis.matches);
+                            highlightMatchedDynamics(analysis.matches, range);
                             showToast(`已定位到 ${analysis.matches.length} 条匹配动态`, 'success');
                         } else {
                             if (analysis.oldestCard) {
                                 analysis.oldestCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
                             }
-                            showToast('已经滚动超过目标开始时间，但当前页面附近没有找到匹配动态。', 'error');
+                            showToast('已经滚动超过目标开始时间，但当前页面附近没有找到匹配动态', 'error');
                         }
                         break;
                     }
                 } else if (analysis.matches.length > 0) {
-                    highlightMatchedDynamics(analysis.matches);
-                    showToast(`已在当前页面定位到 ${analysis.matches.length} 条匹配动态。`, 'success');
+                    highlightMatchedDynamics(analysis.matches, range);
+                    showToast(`已在当前页面定位到 ${analysis.matches.length} 条匹配动态`, 'success');
                     break;
                 }
 
@@ -1079,7 +1096,7 @@
                 }
 
                 if (retries >= 10) {
-                    showToast('连续多次没有加载出新动态，已停止搜索。', 'error');
+                    showToast('连续多次没有加载出新动态，已停止搜索', 'error');
                     break;
                 }
 
@@ -1101,14 +1118,15 @@
         state.activeSearchRange = null;
         toggleSearchProgress(false);
         if (showTip) {
-            showToast('已停止查找。', 'success');
+            showToast('已停止查找', 'success');
         }
     }
 
     function toggleSearchProgress(visible) {
         const progress = document.getElementById('bdt-progress');
         if (progress) {
-            progress.hidden = !visible;
+            // 查找统计面板改为常驻显示，开始/停止搜索时只更新内容，不再切换显示状态。
+            progress.hidden = false;
         }
     }
 
@@ -1149,30 +1167,34 @@
     function handleManualRecycle() {
         const recycleResult = maybeRecycleDynamicCards({ force: true });
         if (recycleResult.recycledCount > 0) {
-            showToast(`已回收 ${recycleResult.recycledCount} 条顶部动态。`, 'success');
+            showToast(`已回收 ${recycleResult.recycledCount} 条顶部动态`, 'success');
             return;
         }
-        showToast('当前视口上方没有可回收的动态。');
+        showToast('动态太少(或不可回收), 无法回收');
+    }
+
+    function getRecycleContextPageKey() {
+        // 这里只用站内路由级别的信息作为回收上下文键，
+        // 避免同一页面里 B 站内部的细碎 URL 变化把统计误判成“切页面”而清零
+        return `${location.origin}${location.pathname}${location.search}`;
     }
 
     function syncRecycleContext(cards = getDynamicCards()) {
-        const currentPageKey = location.href;
+        const currentPageKey = getRecycleContextPageKey();
         const currentContainer = cards[0]?.parentElement || document.querySelector('.bili-dyn-item')?.parentElement || null;
         const pageChanged = state.recycleContextPageKey !== currentPageKey;
         const staleContainer = Boolean(state.recycleContextContainer && !state.recycleContextContainer.isConnected);
-        const containerChanged = Boolean(
-            state.recycleContextContainer
-            && currentContainer
-            && state.recycleContextContainer !== currentContainer
-        );
 
-        if (pageChanged || staleContainer || containerChanged) {
-            // 只要页面上下文或列表容器变了，就把旧页面积累的回收统计和占位块清掉，避免污染新列表。
+        if (pageChanged) {
+            // 只有真正切到新的动态页时才清空回收统计
+            // B 站同页无限滚动时列表容器可能被重建，若这里也清零，就会出现“统计一直为 0、横幅消失”的错觉
             resetRecycleState({ updateDisplay: false });
         }
 
         state.recycleContextPageKey = currentPageKey;
-        state.recycleContextContainer = currentContainer;
+        // 容器被站点重绘替换时，只更新引用，不把当前页面已经累计的回收状态清空
+        // 如果旧容器已经脱离文档而当前还没拿到新容器，则先保留 null，等待下一轮同步
+        state.recycleContextContainer = currentContainer || (staleContainer ? null : state.recycleContextContainer);
     }
 
     function resetRecycleState(options = {}) {
@@ -1186,7 +1208,7 @@
         document.getElementById('bdt-recycle-banner')?.remove();
 
         state.recycleContextContainer = null;
-        state.recycleContextPageKey = location.href;
+        state.recycleContextPageKey = getRecycleContextPageKey();
         state.recycleStats = createEmptyRecycleStats();
 
         if (shouldUpdateDisplay) {
@@ -1214,7 +1236,9 @@
             return { recycledCount: 0, recycledHeight: 0 };
         }
 
-        const recyclableCards = collectRecyclableDynamicCards(cards, maxRecycleCount);
+        const recyclableCards = collectRecyclableDynamicCards(cards, maxRecycleCount, {
+            ignoreViewportBoundary: forceRecycle
+        });
         if (!recyclableCards.length) {
             return { recycledCount: 0, recycledHeight: 0 };
         }
@@ -1243,13 +1267,11 @@
         };
     }
 
-    function collectRecyclableDynamicCards(cards, maxRecycleCount) {
+    function collectRecyclableDynamicCards(cards, maxRecycleCount, options = {}) {
         const recyclableCards = [];
-        const recycleBoundary = getScrollTop() - CONFIG.recycleViewportTopBuffer;
-        const protectedRange = state.searchRunning ? state.activeSearchRange : null;
-        if (recycleBoundary <= 0) {
-            return recyclableCards;
-        }
+        // 现在自动回收和手动回收都不再受“必须离视口顶部足够远”这条限制影响，
+        // 只按数量阈值和查找保护区来决定哪些动态可以被回收。
+        const protectedRange = state.activeSearchRange || state.protectedRecycleRange;
 
         for (const card of cards) {
             if (recyclableCards.length >= maxRecycleCount) {
@@ -1258,13 +1280,11 @@
             if (card.classList.contains('bdt-time-match')) {
                 break;
             }
-            if (getDynamicCardDocumentBottom(card) >= recycleBoundary) {
-                break;
-            }
             if (protectedRange) {
                 const dateInfo = extractDateInfo(card);
                 if (dateInfo && isDateInfoInRange(dateInfo, protectedRange)) {
-                    // 在查找区间上方额外保留一小段较新的动态，方便用户感知目标区间的上下文和时间位置。
+                    // 命中查找区间时，额外保留它上方紧邻的 10 条较新动态，
+                    // 这样上下文会更完整，后续回收也不会把目标附近的参照内容吃掉。
                     const contextKeepCount = Math.min(CONFIG.recycleRangeContextCardBuffer, recyclableCards.length);
                     if (contextKeepCount > 0) {
                         recyclableCards.splice(-contextKeepCount, contextKeepCount);
@@ -1323,7 +1343,7 @@
         const recycleSpacer = document.getElementById('bdt-recycle-spacer');
         const compensatedScrollDistance = Math.min(collapseHeight, Math.max(0, getScrollTop()));
 
-        // 先把占位清空，再补偿滚动距离，尽量减少内容瞬间错位。
+        // 先把占位清空，再补偿滚动距离，尽量减少内容瞬间错位
         state.recycleStats.spacerHeight = 0;
         if (recycleSpacer) {
             recycleSpacer.remove();
@@ -1339,12 +1359,12 @@
         if (!recycleBanner) {
             return;
         }
-        if (state.recycleStats.recycledCardCount <= 0 || state.recycleStats.spacerHeight > 0) {
+        if (state.recycleStats.recycledCardCount <= 0) {
             recycleBanner.hidden = true;
             return;
         }
         recycleBanner.hidden = false;
-        recycleBanner.textContent = `已隐藏 ${state.recycleStats.recycledCardCount} 条较新的动态。`;
+        recycleBanner.textContent = `已隐藏 ${state.recycleStats.recycledCardCount} 条较新的动态`;
     }
 
     function ensureRecycleBanner() {
@@ -1411,7 +1431,7 @@
         const direction = distance < 0 ? -1 : 1;
         let remainingDistance = Math.abs(distance);
         while (remainingDistance > 0) {
-            // 用连续的小步滚动模拟真实滚轮，而不是一次性跳转，尽量触发页面自己的滚动监听与加载逻辑。
+            // 用连续的小步滚动模拟真实滚轮，而不是一次性跳转，尽量触发页面自己的滚动监听与加载逻辑
             const stepDistance = Math.min(CONFIG.wheelLikeScrollStep, remainingDistance) * direction;
             window.scrollBy({ top: stepDistance, behavior: 'auto' });
             remainingDistance -= Math.abs(stepDistance);
@@ -1463,7 +1483,7 @@
         passButton.title = '记录该动态的时间';
         passButton.setAttribute('aria-label', '记录该动态的时间');
         passButton.addEventListener('click', (event) => {
-            // 时间元素附近通常带着原站链接或卡片点击行为，这里拦住默认事件，避免用户只是想回填时间却被带走。
+            // 时间元素附近通常带着原站链接或卡片点击行为，这里拦住默认事件，避免用户只是想回填时间却被带走
             event.preventDefault();
             event.stopPropagation();
             applyDynamicCardTimeToPanel(dynamicCard);
@@ -1480,7 +1500,7 @@
     function applyDynamicCardTimeToPanel(dynamicCard) {
         const dateInfo = extractDateInfo(dynamicCard);
         if (!dateInfo) {
-            showToast('这条动态的时间暂时无法识别。', 'error');
+            showToast('这条动态的时间暂时无法识别', 'error');
             return;
         }
 
@@ -1509,8 +1529,8 @@
             second: endDate.getSeconds()
         };
 
-        // 开始时间直接使用当前动态时间，结束时间则自动顺延 1 分钟。
-        // 这里交给 Date 处理进位，这样在 23:59:xx 之类的边界场景下也能自然跨小时、跨天。
+        // 开始时间直接使用当前动态时间，结束时间则自动顺延 1 分钟
+        // 这里交给 Date 处理进位，这样在 23:59:xx 之类的边界场景下也能自然跨小时、跨天
         setDateTimeGroupParts('start', startParts);
         setDateTimeGroupParts('end', endParts);
         closeDateTimeDropdown();
@@ -1569,7 +1589,7 @@
             if (!timeElement) {
                 return null;
             }
-            // 优先读取元素属性中的完整时间，其次再回退到页面上展示的相对时间文本。
+            // 优先读取元素属性中的完整时间，其次再回退到页面上展示的相对时间文本
             const candidateTexts = [
                 timeElement.getAttribute('title'),
                 timeElement.getAttribute('datetime'),
@@ -1596,7 +1616,7 @@
 
         const now = new Date();
         const normalizedText = String(timeText).replace(/\s+/g, ' ').trim();
-        // 统一把 Date 对象转成脚本内部使用的日期结构，避免每个分支重复拆字段。
+        // 统一把 Date 对象转成脚本内部使用的日期结构，避免每个分支重复拆字段
         const buildDateInfoFromDate = (date) => buildDateInfo(
             date.getFullYear(),
             date.getMonth() + 1,
@@ -1635,12 +1655,12 @@
             );
         }
 
-        // “刚刚”通常表示极近时间，这里直接按当前时刻处理，避免最新动态被漏掉。
+        // “刚刚”通常表示极近时间，这里直接按当前时刻处理，避免最新动态被漏掉
         if (normalizedText === '刚刚') {
             return buildDateInfoFromDate(now);
         }
 
-        // B 站有时会把极近时间显示成“X秒前”，这类动态若没有 title/datetime 属性，就只能靠文本兜底。
+        // B 站有时会把极近时间显示成“X秒前”，这类动态若没有 title/datetime 属性，就只能靠文本兜底
         match = normalizedText.match(/(\d+)秒前/);
         if (match) {
             const date = new Date(now.getTime() - parseInt(match[1], 10) * 1000);
@@ -1659,7 +1679,7 @@
             return buildDateInfoFromDate(date);
         }
 
-        // “今天 HH:mm[:ss]”在没有年份和月日信息时，也要按今天的自然日来补齐。
+        // “今天 HH:mm[:ss]”在没有年份和月日信息时，也要按今天的自然日来补齐
         match = normalizedText.match(/今天(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
         if (match) {
             const date = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parseInt(match[1] || '0', 10), parseInt(match[2] || '0', 10), parseInt(match[3] || '0', 10));
@@ -1678,7 +1698,7 @@
             return buildDateInfoFromDate(date);
         }
 
-        // “X天前”优先按自然日回推；若文本里附带了时分秒，就用该天的明确时刻，否则退回到“当前时刻减去 N 天”。
+        // “X天前”优先按自然日回推；若文本里附带了时分秒，就用该天的明确时刻，否则退回到“当前时刻减去 N 天”
         match = normalizedText.match(/(\d+)天前(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
         if (match) {
             const dayOffset = parseInt(match[1], 10);
@@ -1694,6 +1714,7 @@
     }
 
     function clearHighlightedDynamics() {
+        state.protectedRecycleRange = null;
         document.querySelectorAll('.bdt-time-match').forEach((card) => {
             card.classList.remove('bdt-time-match');
             card.style.outline = '';
@@ -1704,8 +1725,9 @@
         document.querySelectorAll('.bdt-time-badge').forEach((badge) => badge.remove());
     }
 
-    function highlightMatchedDynamics(matches) {
+    function highlightMatchedDynamics(matches, protectedRange = null) {
         clearHighlightedDynamics();
+        state.protectedRecycleRange = protectedRange;
 
         matches.forEach(({ card }, index) => {
             card.classList.add('bdt-time-match');
@@ -1744,7 +1766,7 @@
         const hasEnd = Boolean(filters.rangeEnd);
 
         if (!hasStart && !hasEnd) {
-            showToast('请先填写开始时间或结束时间。', 'error');
+            showToast('请先填写开始时间或结束时间', 'error');
             return null;
         }
 
@@ -1754,15 +1776,15 @@
         const endMs = endValue ? buildDateMsFromParts(endValue) : null;
 
         if (hasStart && (!startValue || Number.isNaN(startMs))) {
-            showToast('开始时间格式无效。', 'error');
+            showToast('开始时间格式无效', 'error');
             return null;
         }
         if (hasEnd && (!endValue || endMs === null || Number.isNaN(endMs))) {
-            showToast('结束时间格式无效。', 'error');
+            showToast('结束时间格式无效', 'error');
             return null;
         }
         if (endMs !== null && startMs > endMs) {
-            showToast('开始时间不能晚于结束时间。', 'error');
+            showToast('开始时间不能晚于结束时间', 'error');
             return null;
         }
 
@@ -1882,7 +1904,7 @@
                 return;
             }
             input.addEventListener('input', () => {
-                // 仅保留数字，让手动输入和自定义建议菜单共用同一套清洗逻辑。
+                // 仅保留数字，让手动输入和自定义建议菜单共用同一套清洗逻辑
                 input.value = sanitizeNumericInput(input.value, partName === 'year' ? 4 : 2);
                 updateDurationDisplay();
                 if (shouldUseDateTimeDropdown(input)) {
@@ -1910,8 +1932,8 @@
                 }
             });
             input.addEventListener('wheel', (event) => {
-                // 只有“当前输入框已聚焦且鼠标正悬停其上方”时，才把滚轮解释为数值增减。
-                // 其余情况交给外层面板统一拦截，这样不会误改未激活的输入框。
+                // 只有“当前输入框已聚焦且鼠标正悬停其上方”时，才把滚轮解释为数值增减
+                // 其余情况交给外层面板统一拦截，这样不会误改未激活的输入框
                 if (document.activeElement !== input) {
                     return;
                 }
@@ -1936,7 +1958,7 @@
         const resetButton = document.getElementById(`bdt-${prefix}-reset-btn`);
         if (resetButton) {
             resetButton.addEventListener('click', () => {
-                // 重置后立即同步 UI、时长显示和持久化设置，保证按钮行为和手动编辑一致。
+                // 重置后立即同步 UI、时长显示和持久化设置，保证按钮行为和手动编辑一致
                 resetDateTimeGroup(prefix);
             });
         }
@@ -1959,7 +1981,7 @@
                 if (typeof pickerProxy.showPicker === 'function') {
                     pickerProxy.showPicker();
                 } else {
-                    // 某些环境不支持 showPicker 时，退回到原生 click 行为。
+                    // 某些环境不支持 showPicker 时，退回到原生 click 行为
                     pickerProxy.click();
                 }
             });
@@ -1972,7 +1994,7 @@
     }
 
     function resetDateTimeGroup(prefix) {
-        // “开始”恢复到当天起始时刻，“结束”恢复到当前时刻，和默认筛选值保持完全一致。
+        // “开始”恢复到当天起始时刻，“结束”恢复到当前时刻，和默认筛选值保持完全一致
         const defaultParts = prefix === 'start' ? getStartOfTodayDateTimeParts() : getNowDateTimeParts();
         setDateTimeGroupParts(prefix, defaultParts);
         closeDateTimeDropdown();
@@ -1983,11 +2005,11 @@
     function transferDateTimeGroupValue(sourcePrefix) {
         const sourceParts = getCurrentValidatedDateTimeGroupParts(sourcePrefix);
         if (!sourceParts) {
-            showToast('当前时间格式无效，无法传递。', 'error');
+            showToast('当前时间格式无效，无法传递', 'error');
             return;
         }
         const targetPrefix = sourcePrefix === 'end' ? 'start' : 'end';
-        // 使用当前已校验的时间整体覆盖对方，保证两个时间组之间的传递结果完全一致。
+        // 使用当前已校验的时间整体覆盖对方，保证两个时间组之间的传递结果完全一致
         setDateTimeGroupParts(targetPrefix, {
             year: sourceParts.year,
             month: sourceParts.month,
@@ -2241,7 +2263,7 @@
             return;
         }
 
-        // 滚轮向上增大、向下减小，并对每个时间片段做边界保护。
+        // 滚轮向上增大、向下减小，并对每个时间片段做边界保护
         if (partName === 'year') {
             safeParts.year = normalizeNumberPart(safeParts.year + step, 0, 9999);
         } else if (partName === 'month') {
@@ -2256,7 +2278,7 @@
             safeParts.second = normalizeNumberPart(safeParts.second + step, 0, 59);
         }
 
-        // 改动年月后，日期上限会变化，这里同步把“日”压回合法范围。
+        // 改动年月后，日期上限会变化，这里同步把“日”压回合法范围
         safeParts.day = clampDayToMonth(safeParts.year, safeParts.month, safeParts.day);
         setDateTimeGroupParts(prefix, safeParts);
         updateDurationDisplay();
@@ -2320,7 +2342,7 @@
             return;
         }
 
-        // 点击悬浮层和输入框之外的区域时，收起当前时间建议菜单。
+        // 点击悬浮层和输入框之外的区域时，收起当前时间建议菜单
         document.addEventListener('mousedown', (event) => {
             const dropdown = document.getElementById('bdt-time-dropdown');
             const target = event.target;
@@ -2335,7 +2357,7 @@
             const launcher = document.getElementById('bdt-launcher');
             if (launcher?.dataset.positionPinned === 'true' && state.launcherPosition) {
                 // 尺寸变化时优先按持久化的百分比位置重新投影到新视口，
-                // 不把“缩小窗口时临时被挤压后的坐标”反写进存储。
+                // 不把“缩小窗口时临时被挤压后的坐标”反写进存储
                 restoreLauncherPosition(launcher);
             } else {
                 clampFloatingElementToViewport(launcher);
@@ -2355,7 +2377,7 @@
             dropdown.hidden = true;
             dropdown.addEventListener('wheel', (event) => {
                 const maxScrollTop = dropdown.scrollHeight - dropdown.clientHeight;
-                // 统一手动驱动下拉栏滚动，避免默认滚动被拦截后菜单自身也滚不动。
+                // 统一手动驱动下拉栏滚动，避免默认滚动被拦截后菜单自身也滚不动
                 event.preventDefault();
                 if (maxScrollTop <= 0) {
                     return;
@@ -2389,7 +2411,7 @@
                 event.preventDefault();
             });
             optionButton.addEventListener('click', () => {
-                // 选择建议值后直接回填输入框，再走现有的归一化与持久化逻辑。
+                // 选择建议值后直接回填输入框，再走现有的归一化与持久化逻辑
                 input.value = optionButton.dataset.value || '';
                 input.dispatchEvent(new Event('blur'));
                 closeDateTimeDropdown();
@@ -2404,8 +2426,8 @@
         dropdown.hidden = false;
 
         // 下拉栏固定改为向上展开：
-        // 先让元素参与布局，拿到实际高度，再把顶部定位到输入框上方。
-        // 同时保留一个最小顶部边距，避免菜单贴到视口最上边。
+        // 先让元素参与布局，拿到实际高度，再把顶部定位到输入框上方
+        // 同时保留一个最小顶部边距，避免菜单贴到视口最上边
         const dropdownHeight = dropdown.offsetHeight;
         const desiredTop = rect.top - dropdownHeight - 6;
         dropdown.style.top = `${Math.max(8, desiredTop)}px`;
@@ -2447,8 +2469,8 @@
             options = createSequentialNumberOptions(0, 59);
         }
 
-        // 面板里要求“大的在上、小的在下”，所以在渲染前统一反转顺序。
-        // 这样年份、月份、日期、时分秒都会保持一致的倒序展示。
+        // 面板里要求“大的在上、小的在下”，所以在渲染前统一反转顺序
+        // 这样年份、月份、日期、时分秒都会保持一致的倒序展示
         options.reverse();
 
         if (!shouldFilterByInput) {
@@ -2520,7 +2542,7 @@
             };
         }
 
-        // 兼容旧版仅保存日期的格式，保留原先“按整天”查找的语义。
+        // 兼容旧版仅保存日期的格式，保留原先“按整天”查找的语义
         match = normalizedValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
         if (match) {
             return {
