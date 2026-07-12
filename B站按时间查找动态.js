@@ -5,7 +5,7 @@
 // @description  在 B 站动态页中按指定日期或时间范围查找动态，并在原页面高亮定位
 // @author       habixz
 // @match        https://t.bilibili.com/*
-// @match        https://space.bilibili.com/*/dynamic*
+// @match        https://space.bilibili.com/*
 // @grant        none
 // @run-at       document-start
 // @license      MIT
