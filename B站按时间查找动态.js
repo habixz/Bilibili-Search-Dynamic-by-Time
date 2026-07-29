@@ -490,6 +490,11 @@
                 cursor: pointer;
                 font-size: 14px;
             }
+            .bdt-btn:disabled {
+                opacity: 0.55;
+                cursor: not-allowed;
+                filter: grayscale(0.18);
+            }
             .bdt-btn-primary {
                 background: linear-gradient(135deg, #00aeec 0%, #5c7cff 100%);
             }
@@ -734,6 +739,10 @@
         document.getElementById('bdt-recycle')?.addEventListener('click', () => {
             handleManualRecycle();
         });
+
+        // 面板首次挂载后立即同步一次按钮状态，
+        // 这样“停止查找”在未运行时会直接保持置灰，不需要等到下一次打开面板再刷新。
+        syncSearchActionButtonState();
     }
 
     function toggleSearchPanel() {
@@ -1036,12 +1045,37 @@
         syncDateTimeGroupFromValue('end', state.filters.rangeEnd);
         updateDurationDisplay();
         updateRecycleStatusDisplay();
+        syncSearchActionButtonState();
     }
 
     function updateFiltersFromUi() {
         state.filters.rangeStart = readDateTimeGroupValue('start');
         state.filters.rangeEnd = readDateTimeGroupValue('end');
         updateDurationDisplay();
+    }
+
+    /**
+     * 同步查找操作按钮的运行态显示。
+     * 查找进行中时：
+     * 1. “开始查找”切成“查找中”并禁用，避免重复触发搜索；
+     * 2. “停止查找”恢复可点击，方便用户随时中断。
+     * 未运行时则反过来处理，让“停止查找”保持置灰。
+     */
+    function syncSearchActionButtonState() {
+        const startButton = document.getElementById('bdt-start');
+        const stopButton = document.getElementById('bdt-stop');
+
+        const isSearching = Boolean(state.searchRunning);
+        if (startButton instanceof HTMLButtonElement) {
+            startButton.textContent = isSearching ? '查找中' : '开始查找';
+            startButton.disabled = isSearching;
+            startButton.setAttribute('aria-disabled', String(isSearching));
+        }
+
+        if (stopButton instanceof HTMLButtonElement) {
+            stopButton.disabled = !isSearching;
+            stopButton.setAttribute('aria-disabled', String(!isSearching));
+        }
     }
 
     async function startUserDynamicSearch() {
@@ -1064,6 +1098,7 @@
         stopUserDynamicSearch(false);
         state.searchRunning = true;
         state.activeSearchRange = range;
+        syncSearchActionButtonState();
         clearHighlightedDynamics();
         updateSearchProgress(0, 0, '初始化中...');
         toggleSearchProgress(true);
@@ -1130,6 +1165,7 @@
     function stopUserDynamicSearch(showTip) {
         state.searchRunning = false;
         state.activeSearchRange = null;
+        syncSearchActionButtonState();
         toggleSearchProgress(false);
         if (showTip) {
             showToast('已停止查找', 'success');
