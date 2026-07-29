@@ -334,8 +334,11 @@
             }
             .bdt-duration-value {
                 margin-top: 4px;
+                display: block;
+                min-height: calc(1.4em + 3px);
                 font-size: 14px;
                 font-weight: 700;
+                line-height: 1.4;
                 color: #18191c;
             }
             .bdt-duration.bdt-duration-error .bdt-duration-value {
